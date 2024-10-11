@@ -1,4 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:skeletonizer/skeletonizer.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   runApp(const MyApp());
@@ -7,119 +13,254 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
+        primarySwatch: Colors.blue,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      debugShowCheckedModeBanner: false,
+      home: const WebViewExample(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class WebViewExample extends StatefulWidget {
+  const WebViewExample({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  WebViewExampleState createState() => WebViewExampleState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class WebViewExampleState extends State<WebViewExample> {
+  late final WebViewController _controller;
+  bool isLoading = true;
+  bool loadError = false;
+  StreamSubscription<List<ConnectivityResult>>?
+      subscription; // Esto es correcto
+  bool isConnected = true;
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+  final List<String> offlineRoutes = [
+    'https://creamosideas.com.co/',
+    'https://creamosideas.com.co/index.php/nosotros/',
+    'https://creamosideas.com.co/index.php/servicios/',
+    'https://creamosideas.com.co/index.php/contact/'
+  ];
+
+  final List<String> socialMediaLinks = [
+    'https://api.whatsapp.com/send/?phone=573138687749&text&type=phone_number&app_absent=0',
+    'https://www.facebook.com/Creamosideas.com.co',
+    'https://www.instagram.com/creamosideas.com.co/',
+    'https://www.tiktok.com/@creamosideas.com.co?is_from_webapp=1&sender_device=pc'
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeWebView();
+    _initializeConnectivity();
+  }
+
+  void _initializeWebView() {
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(NavigationDelegate(
+        onPageFinished: (url) {
+          setState(() {
+            isLoading = false;
+          });
+          _cachePage(url);
+        },
+        onPageStarted: (url) {
+          setState(() {
+            isLoading = true;
+          });
+        },
+        onWebResourceError: (error) {
+          _handleWebResourceError(error);
+        },
+        onNavigationRequest: (request) {
+          if (_isSocialMedia(request.url)) {
+            _launchSocialMedia(request.url);
+            return NavigationDecision.prevent;
+          }
+          return NavigationDecision.navigate;
+        },
+      ));
+
+    _controller.loadRequest(Uri.parse('https://creamosideas.com.co/'));
+  }
+
+  void _initializeConnectivity() {
+    subscription = Connectivity()
+        .onConnectivityChanged
+        .listen((List<ConnectivityResult> results) {
+      for (var result in results) {
+        _updateConnectionStatus(
+            result); // El 'result' es de tipo ConnectivityResult
+      }
     });
+  }
+
+  void _updateConnectionStatus(ConnectivityResult result) {
+    if (result == ConnectivityResult.none) {
+      setState(() {
+        isConnected = false;
+        loadError = true;
+      });
+      _showOfflineBanner();
+      _loadOfflinePage(); // Intenta cargar una página almacenada en caché si no hay conexión
+    } else {
+      setState(() {
+        isConnected = true;
+        loadError = false;
+      });
+      _controller.loadRequest(Uri.parse('https://creamosideas.com.co/'));
+    }
+  }
+
+  Future<void> _cachePage(String url) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (offlineRoutes.contains(url)) {
+      prefs.setString(url, url); // Guarda la URL en el almacenamiento local
+    }
+  }
+
+  Future<void> _loadOfflinePage() async {
+    final prefs = await SharedPreferences.getInstance();
+    for (String route in offlineRoutes) {
+      if (prefs.containsKey(route)) {
+        _controller.loadRequest(Uri.parse(route));
+        return;
+      }
+    }
+    // Mostrar un mensaje si no se encuentra ninguna página en caché
+    _showOfflineDialog();
+  }
+
+  void _handleWebResourceError(WebResourceError error) {
+    if (error.errorCode == -2) {
+      setState(() {
+        loadError = true;
+      });
+      _showOfflineBanner();
+    } else {
+      print("Error cargando página: ${error.description}");
+    }
+  }
+
+  void _showOfflineBanner() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Estás navegando en modo offline.'),
+        action: SnackBarAction(
+          label: 'Recargar',
+          onPressed: () {
+            _controller.loadRequest(Uri.parse('https://creamosideas.com.co/'));
+          },
+        ),
+        duration: const Duration(days: 365), // Mantener visible indefinidamente
+      ),
+    );
+  }
+
+  void _showOfflineDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Sin conexión a internet'),
+          content: const Text(
+              'No tienes conexión a internet, por favor intenta más tarde.'),
+          backgroundColor: Colors.white.withOpacity(0.9),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('Cerrar'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  bool _isSocialMedia(String url) {
+    return socialMediaLinks.any((link) => url.startsWith(link));
+  }
+
+  Future<void> _launchSocialMedia(String url) async {
+    // ignore: deprecated_member_use
+    if (await canLaunch(url)) {
+      // ignore: deprecated_member_use
+      await launch(url);
+    } else {
+      throw 'No se pudo abrir $url';
+    }
+  }
+
+  @override
+  void dispose() {
+    subscription?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+    // ignore: deprecated_member_use
+    return WillPopScope(
+      onWillPop: () async {
+        if (await _controller.canGoBack()) {
+          _controller.goBack();
+          return false;
+        }
+        return true;
+      },
+      child: Scaffold(
+        body: Stack(
+          children: [
+            WebViewWidget(controller: _controller),
+            if (isLoading) buildSkeletonScreen(),
+            if (loadError) buildNoConnectionScreen(),
+          ],
+        ),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+    );
+  }
+
+  Widget buildSkeletonScreen() {
+    return Skeletonizer(
+      enabled: true,
+      child: Container(
+        color: Colors.white, // Color blanco para el skeleton
+        width: double.infinity,
+        height: double.infinity,
+      ),
+    );
+  }
+
+  Widget buildNoConnectionScreen() {
+    return Skeletonizer(
+      enabled: loadError,
+      child: Center(
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
           mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
+          children: [
+            Container(
+              width: 200,
+              height: 20,
+              color: Colors.white, // Color blanco para el skeleton
             ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+            const SizedBox(height: 20),
+            Container(
+              width: 200,
+              height: 20,
+              color: Colors.white, // Color blanco para el skeleton
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
